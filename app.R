@@ -2,9 +2,50 @@
 # POKER LAN GAME  –  app.R
 # Texas Hold'em, multi-player, with win-probability stats
 # ============================================================
-# NOTE: libraries, source() calls, and game_state are defined
-# in global.R so they land in the true global environment and
-# are visible to all helper functions across every session.
+
+library(shiny)
+library(shinyjs)
+
+source("R/poker_logic.R")
+source("R/betting.R")
+source("R/game_state.R")
+source("R/stats.R")
+
+# ============================================================
+# SHARED GAME STATE
+#
+# game_state ต้องอยู่ใน .GlobalEnv เพราะ functions ใน R/*.R
+# ใช้ lexical scoping — พวกมัน lookup ชื่อ "game_state" ใน
+# environment ที่ถูก define (global) ไม่ใช่ environment ของ caller
+#
+# reactiveValues() สร้างได้ใน global scope ของ Shiny app
+# (ไม่ใช่ภายใน server function) — Shiny รองรับ pattern นี้
+# สำหรับ shared state ข้าม sessions
+# ============================================================
+if (!exists("game_state", envir = .GlobalEnv)) {
+  game_state <<- reactiveValues(
+    players            = list(),
+    max_players        = 9L,
+    starting_chips     = 1000,
+    game_started       = FALSE,
+    current_round      = "waiting",
+    deck               = character(),
+    community_cards    = character(),
+    pot                = 0,
+    current_bet        = 0,
+    last_raise_amount  = 0,
+    small_blind        = 5,
+    big_blind          = 10,
+    dealer_position    = 1L,
+    current_turn       = 0L,
+    turn_started_at    = NULL,
+    turn_timer_seconds = 30L,
+    showdown_at        = NULL,
+    action_log         = character(),
+    bb_player_id       = NULL,
+    preflop_opened     = FALSE
+  )
+}
 
 # ============================================================
 # UI
@@ -16,7 +57,7 @@ ui <- fluidPage(
     tags$link(rel = "stylesheet", href = "css/style.css"),
     tags$title("Poker LAN")
   ),
-
+  
   # ---- Join panel (before joining) ----
   conditionalPanel(
     condition = "output.my_pid == ''",
@@ -31,99 +72,88 @@ ui <- fluidPage(
         tableOutput("tbl_lobby")
     )
   ),
-
+  
   # ---- Game panel (after joining) ----
   conditionalPanel(
     condition = "output.my_pid != ''",
-
-    # Info bar
+    
     div(class = "info-bar",
         span(strong("Round: "), textOutput("txt_round", inline = TRUE)),
         span(strong("Pot: $"), textOutput("txt_pot",   inline = TRUE)),
         span(strong("Turn: "), textOutput("txt_turn",  inline = TRUE)),
         span(strong("Timer: "), textOutput("txt_timer", inline = TRUE), "s")
     ),
-
+    
     fluidRow(
-      # ---- Left column: your hand + actions ----
+      # ---- Left: hand + actions ----
       column(4,
-        div(class = "section",
-            h4(textOutput("txt_myname", inline = TRUE)),
-            p(strong("Chips: $"), textOutput("txt_mychips", inline = TRUE)),
-            h5("Your cards:"),
-            uiOutput("ui_mycards"),
-            uiOutput("ui_hand_strength")
-        ),
-
-        # Action buttons (only your turn)
-        conditionalPanel(
-          condition = "output.is_my_turn == 'true'",
-          div(class = "section",
-              div(class = "turn-banner", "YOUR TURN"),
-              div(class = "action-row",
-                  actionButton("btn_fold", "Fold",  class = "btn btn-danger"),
-                  actionButton("btn_call", "...",   class = "btn btn-success",
-                               style = "min-width:100px"),
-                  actionButton("btn_allin","All-In",class = "btn btn-warning")
-              ),
-              hr(),
-              h5("Raise:"),
-              div(class = "action-row",
-                  actionButton("btn_pot3",  "1/3 Pot", class = "btn btn-default"),
-                  actionButton("btn_pot2",  "1/2 Pot", class = "btn btn-default"),
-                  actionButton("btn_pot1",  "1x  Pot", class = "btn btn-default")
-              ),
-              div(class = "action-row",
-                  numericInput("inp_raise", NULL, value = 20, min = 1, step = 5,
-                               width = "120px"),
-                  actionButton("btn_raise", "Raise", class = "btn btn-primary")
-              ),
-              textOutput("txt_min_raise")
-          )
-        ),
-
-        # Waiting for turn
-        conditionalPanel(
-          condition = "output.is_my_turn != 'true' && output.game_on == 'true'",
-          div(class = "section waiting-box",
-              p("Waiting for:"),
-              strong(textOutput("txt_cur_player", inline = TRUE))
-          )
-        ),
-
-        # Start button (lobby)
-        conditionalPanel(
-          condition = "output.game_on != 'true'",
-          div(class = "section",
-              uiOutput("ui_start_btn")
-          )
-        )
+             div(class = "section",
+                 h4(textOutput("txt_myname", inline = TRUE)),
+                 p(strong("Chips: $"), textOutput("txt_mychips", inline = TRUE)),
+                 h5("Your cards:"),
+                 uiOutput("ui_mycards"),
+                 uiOutput("ui_hand_strength")
+             ),
+             
+             # แสดงปุ่ม action ตลอดเวลาที่ game กำลังเล่น
+             conditionalPanel(
+               condition = "output.game_on == 'true'",
+               div(class = "section",
+                   uiOutput("ui_turn_banner"),
+                   div(class = "action-row",
+                       actionButton("btn_fold",  "Fold",   class = "btn btn-danger"),
+                       actionButton("btn_call",  "...",    class = "btn btn-success",
+                                    style = "min-width:100px"),
+                       actionButton("btn_allin", "All-In", class = "btn btn-warning")
+                   ),
+                   hr(),
+                   h5("Raise:"),
+                   div(class = "action-row",
+                       actionButton("btn_pot3", "1/3 Pot", class = "btn btn-default"),
+                       actionButton("btn_pot2", "1/2 Pot", class = "btn btn-default"),
+                       actionButton("btn_pot1", "1x  Pot", class = "btn btn-default")
+                   ),
+                   div(class = "action-row",
+                       numericInput("inp_raise", NULL, value = 20, min = 1, step = 5,
+                                    width = "120px"),
+                       actionButton("btn_raise", "Raise", class = "btn btn-primary")
+                   ),
+                   textOutput("txt_min_raise")
+               )
+             ),
+             
+             conditionalPanel(
+               condition = "output.game_on != 'true'",
+               div(class = "section",
+                   uiOutput("ui_start_btn")
+               )
+             )
       ),
-
-      # ---- Middle column: community cards + win prob ----
+      
+      # ---- Middle: community + win prob ----
       column(4,
-        div(class = "section",
-            h4("Community cards"),
-            uiOutput("ui_community"),
-            hr(),
-            h4("Win probability"),
-            p(em("(Monte Carlo, vs. active opponents)")),
-            uiOutput("ui_winprob"),
-            tableOutput("tbl_hand_dist")
-        )
+             div(class = "section",
+                 h4("Community cards"),
+                 uiOutput("ui_community"),
+                 hr(),
+                 h4("Win probability"),
+                 p(em("(Monte Carlo, vs. active opponents)")),
+                 uiOutput("ui_winprob"),
+                 tableOutput("tbl_hand_dist")
+             )
       ),
-
-      # ---- Right column: other players + game log ----
+      
+      # ---- Right: others + log ----
       column(4,
-        div(class = "section",
-            h4("Other players"),
-            tableOutput("tbl_others")
-        ),
-        div(class = "section",
-            h4("Game log"),
-            div(style = "max-height:300px;overflow-y:auto;font-size:12px;",
-                uiOutput("ui_log"))
-        )
+             div(class = "section",
+                 h4("Other players"),
+                 tableOutput("tbl_others")
+             ),
+             div(class = "section",
+                 h4("Game log"),
+                 div(style = "max-height:300px;overflow-y:auto;font-size:12px;",
+                     uiOutput("ui_log"))
+             )
       )
     )
   )
@@ -134,27 +164,21 @@ ui <- fluidPage(
 # ============================================================
 
 server <- function(input, output, session) {
-
-  # Per-session player id
-  my_pid <- reactiveVal("")
-
-  # Refresh every second
-  tick <- reactiveTimer(1000)
-
-  # Cache for win-prob (recalculate only when cards change)
-  wp_cache <- reactiveVal(NULL)
+  
+  # Per-session state
+  my_pid         <- reactiveVal("")
+  tick           <- reactiveTimer(1000)
+  wp_cache       <- reactiveVal(NULL)
   prev_cards_key <- reactiveVal("")
-
-  # ---- Background tasks (every tick) ----
+  
+  # ---- Background tick ----
   observe({
     tick()
     isolate({
-      # Timeout handling
-      if (game_state$game_started) check_and_handle_timeout()
-
-      # Post-showdown reset (3 s delay without blocking)
+      if (isTRUE(game_state$game_started)) check_and_handle_timeout()
+      
       if (!is.null(game_state$showdown_at)) {
-        elapsed <- as.numeric(difftime(Sys.time(), game_state$showdown_at, units="secs"))
+        elapsed <- as.numeric(difftime(Sys.time(), game_state$showdown_at, units = "secs"))
         if (elapsed >= 3) {
           game_state$game_started  <- FALSE
           game_state$current_round <- "waiting"
@@ -164,19 +188,19 @@ server <- function(input, output, session) {
       }
     })
   })
-
-  # ---- Win probability (recalculate when hand/community changes) ----
+  
+  # ---- Win probability cache ----
   observe({
     tick()
     pid <- isolate(my_pid())
-    if (pid == "" || !game_state$game_started) return()
+    if (pid == "" || !isTRUE(game_state$game_started)) return()
     pid <- as.integer(pid)
     if (pid > length(game_state$players)) return()
-
+    
     hole      <- game_state$players[[pid]]$cards
     community <- game_state$community_cards
-    key       <- paste(c(hole, community), collapse=",")
-
+    key       <- paste(c(hole, community), collapse = ",")
+    
     isolate({
       if (key != prev_cards_key() && length(hole) == 2) {
         n_opp <- sum(vapply(game_state$players,
@@ -191,11 +215,11 @@ server <- function(input, output, session) {
       }
     })
   })
-
+  
   # ====================================================
   # Event handlers
   # ====================================================
-
+  
   observeEvent(input$btn_join, {
     nm <- trimws(input$inp_name)
     if (nchar(nm) == 0) {
@@ -215,26 +239,54 @@ server <- function(input, output, session) {
       showNotification(note, type = "message")
     }
   })
-
+  
   observeEvent(input$btn_start, {
     if (my_pid() == "") return()
     ok <- start_game()
     if (!ok) showNotification("Need at least 2 players.", type = "error")
   })
-
+  
+  # ตรวจสอบว่า player สามารถ act ได้ไหม
+  # คืน TRUE ถ้า act ได้, แสดง notification และคืน FALSE ถ้าไม่ได้
+  can_act <- function(pid) {
+    if (!isTRUE(game_state$game_started)) {
+      showNotification("Game not started yet.", type = "warning"); return(FALSE)
+    }
+    if (pid > length(game_state$players)) return(FALSE)
+    p <- game_state$players[[pid]]
+    if (isTRUE(p$folded)) {
+      showNotification("You have already folded.", type = "warning"); return(FALSE)
+    }
+    if (isTRUE(p$all_in)) {
+      showNotification("You are all-in.", type = "warning"); return(FALSE)
+    }
+    if (game_state$current_round == "showdown") {
+      showNotification("Hand is over.", type = "warning"); return(FALSE)
+    }
+    if (!isTRUE(game_state$current_turn == pid)) {
+      ct <- game_state$current_turn
+      cur_name <- if (ct > 0L && ct <= length(game_state$players))
+        game_state$players[[ct]]$name else "someone"
+      showNotification(paste0("Not your turn! Waiting for ", cur_name, "."),
+                       type = "warning", duration = 2)
+      return(FALSE)
+    }
+    return(TRUE)
+  }
+  
   observeEvent(input$btn_fold, {
     pid <- as.integer(my_pid())
-    if (game_state$current_turn == pid) player_fold(pid)
+    if (can_act(pid)) player_fold(pid)
   })
-
+  
   observeEvent(input$btn_call, {
     pid <- as.integer(my_pid())
-    if (game_state$current_turn == pid) player_call(pid)
+    if (can_act(pid)) player_call(pid)
   })
-
+  
   observeEvent(input$btn_allin, {
     pid <- as.integer(my_pid())
-    if (game_state$current_turn != pid) return()
+    if (!can_act(pid)) return()
     p          <- game_state$players[[pid]]
     call_amt   <- game_state$current_bet - p$bet_this_round
     raise_part <- p$chips - call_amt
@@ -242,56 +294,61 @@ server <- function(input, output, session) {
       player_call(pid)
     } else {
       res <- player_raise(pid, raise_part)
-      if (!res$success) player_call(pid)
+      if (!isTRUE(res$success)) player_call(pid)
     }
   })
-
+  
   observeEvent(input$btn_raise, {
     pid <- as.integer(my_pid())
-    if (game_state$current_turn != pid) return()
-    res <- player_raise(pid, input$inp_raise)
-    if (!res$success) showNotification(res$error, type = "error")
+    if (!can_act(pid)) return()
+    raise_val <- input$inp_raise
+    if (is.null(raise_val) || is.na(raise_val) || raise_val <= 0) {
+      showNotification("Invalid raise amount.", type = "error"); return()
+    }
+    res <- player_raise(pid, raise_val)
+    if (!isTRUE(res$success)) showNotification(res$error, type = "error")
   })
-
+  
   .quick_bet <- function(fraction) {
     pid <- as.integer(my_pid())
-    if (game_state$current_turn != pid) return()
-    base_amt <- if (fraction == 0) game_state$pot else ceiling(game_state$pot * fraction)
+    if (!can_act(pid)) return()
+    base_amt <- ceiling(game_state$pot * fraction)
     amt      <- max(get_min_raise(), base_amt)
     res      <- player_raise(pid, amt)
-    if (!res$success) showNotification(res$error, type = "error")
+    if (!isTRUE(res$success)) showNotification(res$error, type = "error")
   }
-  observeEvent(input$btn_pot3,  { .quick_bet(1/3) })
-  observeEvent(input$btn_pot2,  { .quick_bet(1/2) })
-  observeEvent(input$btn_pot1,  { .quick_bet(1) })
-
-  # Session disconnect → auto-fold
+  observeEvent(input$btn_pot3, { .quick_bet(1/3) })
+  observeEvent(input$btn_pot2, { .quick_bet(1/2) })
+  observeEvent(input$btn_pot1, { .quick_bet(1)   })
+  
   session$onSessionEnded(function() {
-    pid_str <- isolate(my_pid())
-    if (pid_str == "") return()
-    pid <- as.integer(pid_str)
-    if (pid < 1L || pid > length(game_state$players)) return()
-    if (game_state$game_started && game_state$current_turn == pid &&
-        !game_state$players[[pid]]$folded) {
-      log_action(paste(game_state$players[[pid]]$name, "disconnected – auto fold"))
-      player_fold(pid)
-    }
+    isolate({
+      pid_str <- my_pid()
+      if (pid_str == "") return()
+      pid <- as.integer(pid_str)
+      if (pid < 1L || pid > length(game_state$players)) return()
+      if (isTRUE(game_state$game_started) &&
+          isTRUE(game_state$current_turn == pid) &&
+          !isTRUE(game_state$players[[pid]]$folded)) {
+        log_action(paste(game_state$players[[pid]]$name, "disconnected – auto fold"))
+        player_fold(pid)
+      }
+    })
   })
-
+  
   # ====================================================
   # Outputs
   # ====================================================
-
-  # Expose my_pid for conditionalPanel
+  
   output$my_pid <- reactive({ my_pid() })
   outputOptions(output, "my_pid", suspendWhenHidden = FALSE)
-
+  
   output$game_on <- reactive({
     tick()
-    as.character(game_state$game_started)
+    if (isTRUE(game_state$game_started)) "true" else "false"
   })
   outputOptions(output, "game_on", suspendWhenHidden = FALSE)
-
+  
   output$is_my_turn <- reactive({
     tick()
     pid_str <- my_pid()
@@ -299,199 +356,237 @@ server <- function(input, output, session) {
     pid <- as.integer(pid_str)
     if (pid > length(game_state$players)) return("false")
     p <- game_state$players[[pid]]
-    as.character(
-      game_state$game_started &&
-      game_state$current_turn == pid &&
-      game_state$current_round != "showdown" &&
-      !p$folded && !p$all_in
+    is_turn <- (
+      isTRUE(game_state$game_started)             &&
+        isTRUE(game_state$current_turn == pid)       &&
+        game_state$current_round != "showdown"       &&
+        !isTRUE(p$folded) && !isTRUE(p$all_in)      &&
+        !isTRUE(p$sit_out)
     )
+    if (is_turn) "true" else "false"
   })
   outputOptions(output, "is_my_turn", suspendWhenHidden = FALSE)
-
-  # Info bar
-  output$txt_round <- renderText({
-    tick(); toupper(game_state$current_round)
-  })
+  
+  output$txt_round <- renderText({ tick(); toupper(game_state$current_round) })
+  
   output$txt_pot <- renderText({
-    tick(); format(game_state$pot, big.mark=",")
+    tick(); format(game_state$pot, big.mark = ",")
   })
+  
   output$txt_turn <- renderText({
     tick()
     ct <- game_state$current_turn
-    if (ct > 0 && ct <= length(game_state$players))
+    if (ct > 0L && ct <= length(game_state$players))
       game_state$players[[ct]]$name else "—"
   })
-  output$txt_timer <- renderText({
-    tick(); get_time_remaining()
-  })
-
-  # My info (txt_myname is defined once at bottom with stats)
+  
+  output$txt_timer <- renderText({ tick(); get_time_remaining() })
+  
   output$txt_mychips <- renderText({
-    pid_str <- my_pid(); if (pid_str=="") return("0")
+    pid_str <- my_pid(); if (pid_str == "") return("0")
     pid <- as.integer(pid_str); tick()
     if (pid > length(game_state$players)) return("0")
-    format(game_state$players[[pid]]$chips, big.mark=",")
+    format(game_state$players[[pid]]$chips, big.mark = ",")
   })
-
-  # My cards
+  
   output$ui_mycards <- renderUI({
-    pid_str <- my_pid(); if (pid_str=="") return(NULL)
+    pid_str <- my_pid(); if (pid_str == "") return(NULL)
     pid <- as.integer(pid_str); tick()
     if (pid > length(game_state$players)) return(NULL)
     cards <- game_state$players[[pid]]$cards
     if (length(cards) == 0) return(p("(no cards)"))
-    tagList(lapply(cards, function(c) {
-      s   <- card_suit(c)
-      cls <- if (s %in% c("h","d")) "card red-card" else "card black-card"
-      span(class=cls, format_card(c))
+    tagList(lapply(cards, function(cd) {
+      s   <- card_suit(cd)
+      cls <- if (s %in% c("h", "d")) "card red-card" else "card black-card"
+      span(class = cls, format_card(cd))
     }))
   })
-
+  
   output$ui_hand_strength <- renderUI({
-    pid_str <- my_pid(); if (pid_str=="") return(NULL)
+    pid_str <- my_pid(); if (pid_str == "") return(NULL)
     pid <- as.integer(pid_str); tick()
     if (pid > length(game_state$players)) return(NULL)
-    p_obj   <- game_state$players[[pid]]
-    cards_h <- c(p_obj$cards, game_state$community_cards)
-    if (length(cards_h) < 2) return(NULL)
-    if (length(cards_h) >= 5) {
-      h <- evaluate_hand(cards_h)
-      p(strong("Hand: "), h$name)
-    } else {
-      NULL
-    }
+    cards_h <- c(game_state$players[[pid]]$cards, game_state$community_cards)
+    if (length(cards_h) < 5) return(NULL)
+    p(strong("Hand: "), evaluate_hand(cards_h)$name)
   })
-
-  # Call button text
+  
   observe({
     tick()
     pid_str <- my_pid()
-    if (pid_str == "" || !game_state$game_started) return()
+    if (pid_str == "" || !isTRUE(game_state$game_started)) return()
     pid <- as.integer(pid_str)
     if (pid > length(game_state$players)) return()
-    p_obj     <- game_state$players[[pid]]
-    call_amt  <- game_state$current_bet - p_obj$bet_this_round
-    label     <- if (call_amt == 0) "Check" else paste0("Call $", call_amt)
+    call_amt <- game_state$current_bet - game_state$players[[pid]]$bet_this_round
+    label    <- if (call_amt == 0) "Check" else paste0("Call $", call_amt)
     updateActionButton(session, "btn_call", label = label)
   })
-
-  # Min raise text
-  output$txt_min_raise <- renderText({
-    tick(); paste("Min raise: $", get_min_raise())
-  })
-
-  # Community cards
+  
+  output$txt_min_raise <- renderText({ tick(); paste("Min raise: $", get_min_raise()) })
+  
   output$ui_community <- renderUI({
     tick()
     cards <- game_state$community_cards
     if (length(cards) == 0) return(p("(none yet)"))
-    tagList(lapply(cards, function(c) {
-      s   <- card_suit(c)
-      cls <- if (s %in% c("h","d")) "card red-card" else "card black-card"
-      span(class=cls, format_card(c))
+    tagList(lapply(cards, function(cd) {
+      s   <- card_suit(cd)
+      cls <- if (s %in% c("h", "d")) "card red-card" else "card black-card"
+      span(class = cls, format_card(cd))
     }))
   })
-
-  # Win probability
+  
   output$ui_winprob <- renderUI({
     tick()
     pid_str <- my_pid()
-    if (pid_str == "" || !game_state$game_started) return(p("—"))
+    if (pid_str == "" || !isTRUE(game_state$game_started)) return(p("—"))
     pid <- as.integer(pid_str)
-    if (pid > length(game_state$players)) return(p("—"))
+    if (pid > length(game_state$players))            return(p("—"))
     if (length(game_state$players[[pid]]$cards) < 2) return(p("—"))
-
     res <- wp_cache()
     if (is.null(res)) return(p("Calculating..."))
-
-    tagList(
-      p(strong("Win: "), paste0(res$win_pct, "%"),
-        " | ",
-        strong("Tie: "), paste0(res$tie_pct, "%"))
-    )
+    tagList(p(strong("Win: "), paste0(res$win_pct, "%"),
+              " | ",
+              strong("Tie: "), paste0(res$tie_pct, "%")))
   })
-
+  
   output$tbl_hand_dist <- renderTable({
     tick()
     res <- wp_cache()
     if (is.null(res) || is.null(res$hand_dist)) return(NULL)
     res$hand_dist
-  }, striped=TRUE, hover=TRUE, bordered=FALSE, spacing="xs",
-     caption="Simulated hand distribution")
-
-  # Lobby table
+  }, striped = TRUE, hover = TRUE, bordered = FALSE, spacing = "xs",
+  caption = "Simulated hand distribution")
+  
   output$tbl_lobby <- renderTable({
     tick()
-    if (length(game_state$players) == 0) {
-      return(data.frame(Name="(none)", Chips="—", stringsAsFactors=FALSE))
-    }
+    if (length(game_state$players) == 0)
+      return(data.frame(Name = "(none)", Chips = "—", stringsAsFactors = FALSE))
     data.frame(
-      Name  = vapply(game_state$players, function(p) p$name,    character(1)),
-      Chips = vapply(game_state$players, function(p) paste0("$",p$chips), character(1)),
+      Name  = vapply(game_state$players, `[[`, character(1), "name"),
+      Chips = vapply(game_state$players,
+                     function(p) paste0("$", p$chips), character(1)),
       stringsAsFactors = FALSE
     )
-  }, striped=TRUE, hover=TRUE)
-
-  # Other players table
+  }, striped = TRUE, hover = TRUE)
+  
   output$tbl_others <- renderTable({
     tick()
-    pid_str <- my_pid(); if (pid_str=="") return(NULL)
-    pid <- as.integer(pid_str)
+    pid_str <- my_pid(); if (pid_str == "") return(NULL)
+    pid    <- as.integer(pid_str)
     others <- Filter(function(p) p$id != pid, game_state$players)
-    if (length(others) == 0) return(data.frame(Info="(none)"))
-
+    if (length(others) == 0) return(data.frame(Info = "(none)"))
     data.frame(
-      Name   = vapply(others, function(p) p$name,  character(1)),
-      Chips  = vapply(others, function(p) paste0("$", format(p$chips, big.mark=",")), character(1)),
-      Bet    = vapply(others, function(p) paste0("$", p$bet_this_round), character(1)),
+      Name   = vapply(others, `[[`, character(1), "name"),
+      Chips  = vapply(others,
+                      function(p) paste0("$", format(p$chips, big.mark = ",")),
+                      character(1)),
+      Bet    = vapply(others,
+                      function(p) paste0("$", p$bet_this_round), character(1)),
       Status = vapply(others, function(p) {
-        if (p$folded) "FOLD"
-        else if (p$all_in) "ALL-IN"
-        else if (game_state$current_turn == p$id && game_state$game_started) "THINKING"
-        else "active"
+        if      (isTRUE(p$folded))  "FOLD"
+        else if (isTRUE(p$all_in))  "ALL-IN"
+        else if (isTRUE(game_state$current_turn == p$id) &&
+                 isTRUE(game_state$game_started))          "THINKING"
+        else                                               "active"
       }, character(1)),
       Won    = vapply(others, function(p) p$stats$hands_won, integer(1)),
       stringsAsFactors = FALSE
     )
-  }, striped=TRUE, hover=TRUE)
-
-  # Start button UI
+  }, striped = TRUE, hover = TRUE)
+  
   output$ui_start_btn <- renderUI({
     tick()
     n <- length(game_state$players)
     tagList(
       p(paste0("Players: ", n, " / ", game_state$max_players)),
       actionButton("btn_start", "Start New Hand",
-                   class="btn btn-lg btn-primary",
+                   class    = "btn btn-lg btn-primary",
                    disabled = if (n < 2) "disabled" else NULL)
     )
   })
-
-  # Current player name (for waiting display)
+  
   output$txt_cur_player <- renderText({
     tick()
     ct <- game_state$current_turn
-    if (ct > 0 && ct <= length(game_state$players))
+    if (ct > 0L && ct <= length(game_state$players))
       game_state$players[[ct]]$name else "..."
   })
-
-  # Game log
+  
+  output$ui_waiting_status <- renderUI({
+    tick()
+    pid_str <- my_pid()
+    if (pid_str == "") return(NULL)
+    pid <- as.integer(pid_str)
+    if (pid > length(game_state$players)) return(NULL)
+    p <- game_state$players[[pid]]
+    
+    if (isTRUE(p$sit_out) || (isTRUE(p$folded) && length(p$cards) == 0)) {
+      # Player join กลาง hand — แสดง sit-out message
+      tagList(
+        p(style = "color:#e67e22; font-weight:bold;",
+          "⏳ Sitting out this hand"),
+        p(style = "color:#888; font-size:12px;",
+          "You joined mid-hand. You will be dealt in next hand.")
+      )
+    } else if (isTRUE(p$folded)) {
+      p("You folded. Waiting for next hand.")
+    } else {
+      tagList(
+        p("Waiting for:"),
+        strong(textOutput("txt_cur_player", inline = TRUE))
+      )
+    }
+  })
+  
   output$ui_log <- renderUI({
     tick()
     logs <- game_state$action_log
     if (length(logs) == 0) return(p("No actions yet."))
-    HTML(paste(htmltools::htmlEscape(logs), collapse="<br>"))
+    HTML(paste(htmltools::htmlEscape(logs), collapse = "<br>"))
   })
-
-  # My stats (shown in name header)
+  
   output$txt_myname <- renderText({
-    pid_str <- my_pid(); if (pid_str=="") return("")
+    pid_str <- my_pid(); if (pid_str == "") return("")
     pid <- as.integer(pid_str); tick()
     if (pid > length(game_state$players)) return("")
     p_obj <- game_state$players[[pid]]
     s     <- p_obj$stats
     paste0(p_obj$name, "  |  Won: ", s$hands_won, "/", s$hands_played,
            "  Streak: ", s$current_streak)
+  })
+  
+  # Banner แสดงสถานะ turn — แสดงบนปุ่ม action เสมอ
+  output$ui_turn_banner <- renderUI({
+    tick()
+    pid_str <- my_pid(); if (pid_str == "") return(NULL)
+    pid <- as.integer(pid_str)
+    if (pid > length(game_state$players)) return(NULL)
+    p <- game_state$players[[pid]]
+    
+    if (game_state$current_round == "showdown") {
+      div(class = "turn-banner",
+          style = "background:#8e44ad;",
+          "SHOWDOWN")
+    } else if (isTRUE(p$folded)) {
+      div(class = "turn-banner",
+          style = "background:#7f8c8d;",
+          "YOU FOLDED")
+    } else if (isTRUE(p$all_in)) {
+      div(class = "turn-banner",
+          style = "background:#e67e22;",
+          "ALL-IN")
+    } else if (isTRUE(game_state$current_turn == pid)) {
+      div(class = "turn-banner",
+          style = "background:#27ae60;",
+          "YOUR TURN")
+    } else {
+      ct <- game_state$current_turn
+      cur_name <- if (ct > 0L && ct <= length(game_state$players))
+        game_state$players[[ct]]$name else "..."
+      div(class = "turn-banner",
+          style = "background:#2980b9;",
+          paste0("Waiting for: ", cur_name))
+    }
   })
 }
 
