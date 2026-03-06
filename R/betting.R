@@ -1,192 +1,113 @@
-# ============================================
-# BETTING LOGIC - Side Pots & Validation
-# ============================================
+# ============================================================
+# BETTING  –  side pots, pot distribution, raise validation
+# ============================================================
 
-#' Calculate side pots from current player bets
-#' @param players list of player objects
-#' @return list of pot objects
+# Build side pot structure from current player bets.
+# Folded players' contributions count toward amounts but not eligibility.
 calculate_side_pots <- function(players) {
-
-  # Non-folded players who can win
   active <- Filter(function(p) !p$folded, players)
+  if (length(active) == 0L) return(list())
 
-  if (length(active) == 0) {
-    return(list())
-  }
-
-  # Get bet amounts from ALL players (including folded) to count all contributions
-  all_bets <- sapply(players, function(p) p$total_bet_this_hand)
+  all_bets    <- vapply(players, function(p) p$total_bet_this_hand, numeric(1))
   unique_bets <- sort(unique(all_bets[all_bets > 0]))
+  if (length(unique_bets) == 0L) return(list())
 
-  if (length(unique_bets) == 0) {
-    return(list())
-  }
-
-  pots <- list()
-  previous_level <- 0
+  pots  <- list()
+  prev  <- 0
 
   for (level in unique_bets) {
-
-    # Who can WIN this pot? (non-folded and bet >= level)
-    eligible <- Filter(function(p) p$total_bet_this_hand >= level, active)
-
-    # Who CONTRIBUTED to this pot? (ALL players including folded who bet >= level)
-    contributors <- Filter(function(p) p$total_bet_this_hand >= level, players)
-
-    # Amount uses all contributors (not just eligible winners)
-    contribution <- level - previous_level
-    amount <- contribution * length(contributors)
-
-    if (amount > 0) {
-      pots[[length(pots) + 1]] <- list(
-        amount = amount,
-        eligible_players = sapply(eligible, function(p) p$id),
-        bet_level = level
+    eligible    <- Filter(function(p) !p$folded && p$total_bet_this_hand >= level, players)
+    contributors <- Filter(function(p)                p$total_bet_this_hand >= level, players)
+    amount       <- (level - prev) * length(contributors)
+    if (amount > 0 && length(eligible) > 0) {
+      pots[[length(pots) + 1L]] <- list(
+        amount           = amount,
+        eligible_ids     = vapply(eligible, function(p) p$id, integer(1)),
+        bet_level        = level
       )
     }
-
-    previous_level <- level
+    prev <- level
   }
-
   return(pots)
 }
 
-#' Distribute pots to winners
-#' @param pots list of pot objects from calculate_side_pots()
-#' @param players list of player objects
-#' @param community_cards community cards
-#' @return updated players list with chips distributed
+# Award each pot to the best hand(s) among eligible players.
 distribute_pots <- function(pots, players, community_cards) {
-  
-  if (length(pots) == 0) {
-    return(players)
-  }
-  
-  for (pot_idx in seq_along(pots)) {
-    pot <- pots[[pot_idx]]
-    
-    # Get eligible non-folded players
-    eligible_players <- Filter(
-      function(p) p$id %in% pot$eligible_players && !p$folded,
-      players
-    )
-    
-    if (length(eligible_players) == 0) {
+  if (length(pots) == 0L) return(players)
+
+  for (pot in pots) {
+    elig <- Filter(function(p) p$id %in% pot$eligible_ids, players)
+    if (length(elig) == 0L) next
+
+    if (length(elig) == 1L) {
+      # Everyone else folded – sole winner
+      idx <- which(vapply(players, function(p) p$id == elig[[1L]]$id, logical(1)))
+      players[[idx]]$chips                <- players[[idx]]$chips + pot$amount
+      players[[idx]]$stats$total_won      <- players[[idx]]$stats$total_won + pot$amount
+      players[[idx]]$stats$hands_won      <- players[[idx]]$stats$hands_won + 1L
+      players[[idx]]$stats$biggest_pot    <- max(players[[idx]]$stats$biggest_pot, pot$amount)
+      players[[idx]]$stats$current_streak <- max(1L, players[[idx]]$stats$current_streak + 1L)
+      log_action(paste(elig[[1L]]$name, "wins $", round(pot$amount)))
       next
     }
-    
-    # If only one player left, they win
-    if (length(eligible_players) == 1) {
-      winner <- eligible_players[[1]]
-      winner_idx <- which(sapply(players, function(p) p$id == winner$id))
-      
-      players[[winner_idx]]$chips <- players[[winner_idx]]$chips + pot$amount
-      players[[winner_idx]]$stats$total_won <- 
-        players[[winner_idx]]$stats$total_won + pot$amount
-      players[[winner_idx]]$stats$hands_won <- 
-        players[[winner_idx]]$stats$hands_won + 1
-      
-      if (pot$amount > players[[winner_idx]]$stats$biggest_pot) {
-        players[[winner_idx]]$stats$biggest_pot <- pot$amount
+
+    # Evaluate every eligible hand and find winner(s)
+    all_cards <- lapply(elig, function(p) c(p$cards, community_cards))
+    n         <- length(elig)
+    is_best   <- rep(TRUE, n)
+
+    for (i in seq_len(n)) {
+      if (!is_best[i]) next
+      for (j in seq_len(n)) {
+        if (i == j || !is_best[j]) next
+        cmp <- compare_hands(all_cards[[i]], all_cards[[j]])
+        if (cmp < 0) { is_best[i] <- FALSE; break }
+        if (cmp > 0)   is_best[j] <- FALSE
       }
-      
-      log_action(paste(winner$name, "wins $", round(pot$amount, 2), 
-                       "(Pot", pot_idx, "- others folded)"))
-      next
     }
-    
-    # Evaluate all hands
-    hands <- lapply(eligible_players, function(p) {
-      all_cards <- c(p$cards, community_cards)
-      hand_eval <- evaluate_hand(all_cards)
-      list(player = p, hand = hand_eval)
-    })
-    
-    # Find best hand(s)
-    best_rank <- max(sapply(hands, function(h) h$hand$rank))
-    winners <- Filter(function(h) h$hand$rank == best_rank, hands)
-    
-    # Split pot
-    share <- pot$amount / length(winners)
-    
-    for (winner_info in winners) {
-      winner <- winner_info$player
-      winner_idx <- which(sapply(players, function(p) p$id == winner$id))
-      
-      players[[winner_idx]]$chips <- players[[winner_idx]]$chips + share
-      players[[winner_idx]]$stats$total_won <- 
-        players[[winner_idx]]$stats$total_won + share
-      players[[winner_idx]]$stats$hands_won <- 
-        players[[winner_idx]]$stats$hands_won + 1
-      
-      if (share > players[[winner_idx]]$stats$biggest_pot) {
-        players[[winner_idx]]$stats$biggest_pot <- share
-      }
-      
-      # Update streak
-      if (players[[winner_idx]]$stats$current_streak >= 0) {
-        players[[winner_idx]]$stats$current_streak <- 
-          players[[winner_idx]]$stats$current_streak + 1
-      } else {
-        players[[winner_idx]]$stats$current_streak <- 1
-      }
-      
-      log_action(paste(winner$name, "wins $", round(share, 2),
-                       "with", winner_info$hand$hand,
-                       "(Pot", pot_idx, ")"))
+
+    winners <- elig[is_best]
+    share   <- pot$amount / length(winners)
+
+    for (w in winners) {
+      idx <- which(vapply(players, function(p) p$id == w$id, logical(1)))
+      hand_name <- evaluate_hand(c(w$cards, community_cards))$name
+      players[[idx]]$chips                <- players[[idx]]$chips + share
+      players[[idx]]$stats$total_won      <- players[[idx]]$stats$total_won + share
+      players[[idx]]$stats$hands_won      <- players[[idx]]$stats$hands_won + 1L
+      players[[idx]]$stats$biggest_pot    <- max(players[[idx]]$stats$biggest_pot, share)
+      players[[idx]]$stats$current_streak <- max(1L, players[[idx]]$stats$current_streak + 1L)
+      log_action(paste(w$name, "wins $", round(share), "with", hand_name))
     }
   }
-  
+
   return(players)
 }
 
-#' Validate raise amount
-#' @param raise_amount amount to raise
-#' @param player_id player making raise
-#' @return list(valid, error)
+# Validate a proposed raise amount for player_id.
+# Returns list(valid = logical, error = character or NULL).
 validate_raise <- function(raise_amount, player_id) {
-  
-  if (!exists("game_state")) {
-    return(list(valid = FALSE, error = "Game state not found"))
-  }
-  
-  if (player_id > length(game_state$players)) {
+  if (player_id > length(game_state$players))
     return(list(valid = FALSE, error = "Invalid player"))
-  }
-  
-  player <- game_state$players[[player_id]]
-  
-  # Check chips available
-  call_amount <- game_state$current_bet - player$bet_this_round
-  total_needed <- call_amount + raise_amount
-  
-  if (total_needed > player$chips) {
-    return(list(
-      valid = FALSE,
-      error = paste("Need $", total_needed, "but only have $", player$chips)
-    ))
-  }
-  
-  # Check minimum raise (all-in raises are always allowed even if below min_raise)
-  min_raise <- get_min_raise()
-  is_all_in <- (call_amount + raise_amount >= player$chips)
 
-  if (!is_all_in && raise_amount < min_raise) {
-    return(list(
-      valid = FALSE,
-      error = paste("Minimum raise is $", min_raise)
-    ))
-  }
+  p           <- game_state$players[[player_id]]
+  call_amount <- game_state$current_bet - p$bet_this_round
+  total       <- call_amount + raise_amount
+
+  if (total > p$chips)
+    return(list(valid = FALSE,
+                error = paste0("Need $", total, " but only have $", p$chips)))
+
+  min_r    <- get_min_raise()
+  is_allin <- (total >= p$chips)
+
+  if (!is_allin && raise_amount < min_r)
+    return(list(valid = FALSE,
+                error = paste("Minimum raise is $", min_r)))
 
   return(list(valid = TRUE, error = NULL))
 }
 
-#' Get minimum raise amount
-#' @return numeric minimum raise
 get_min_raise <- function() {
-  if (!exists("game_state")) {
-    return(10)
-  }
-  
   max(game_state$big_blind, game_state$last_raise_amount)
 }
