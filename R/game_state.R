@@ -318,16 +318,23 @@ next_player <- function() {
 
 #' End betting round and move to next
 end_betting_round <- function() {
-  
+
+  # If only one non-folded player remains, award pot immediately
+  active_count <- sum(sapply(game_state$players, function(p) !p$folded))
+  if (active_count <= 1) {
+    showdown()
+    return()
+  }
+
   # Reset round bets
   for (i in seq_along(game_state$players)) {
     game_state$players[[i]]$bet_this_round <- 0
   }
-  
+
   game_state$current_bet <- 0
   game_state$last_raise_amount <- 0
   game_state$turn_started_at <- NULL
-  
+
   # Next stage
   if (game_state$current_round == "preflop") {
     game_state$current_round <- "flop"

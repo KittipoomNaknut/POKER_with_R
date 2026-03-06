@@ -77,20 +77,6 @@ ui <- fluidPage(
             )
         ),
         
-        # ✅ ย้าย Start Game Button มาไว้ตรงนี้
-        conditionalPanel(
-          condition = "output.game_started == 'false'",
-          div(style = "margin: 30px 0; text-align: center; background: #2a2a2a; padding: 30px; border-radius: 10px;",
-              h3(style = "color: #ffd700; margin-bottom: 20px;", 
-                 "Ready to play?"),
-              p(style = "color: #ccc; margin-bottom: 20px;",
-                paste0("Players joined: ", textOutput("player_count_inline", inline = TRUE))),
-              actionButton("start_game", "🎲 START NEW HAND 🎲",
-                           class = "btn btn-start",
-                           style = "font-size: 28px; padding: 25px 50px; width: 100%;")
-          )
-        ),
-        
         # Other Players
         conditionalPanel(
           condition = "output.player_id != null && output.player_id != ''",

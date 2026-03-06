@@ -6,34 +6,37 @@
 #' @param players list of player objects
 #' @return list of pot objects
 calculate_side_pots <- function(players) {
-  
-  # Get non-folded players
+
+  # Non-folded players who can win
   active <- Filter(function(p) !p$folded, players)
-  
+
   if (length(active) == 0) {
     return(list())
   }
-  
-  # Get all bet amounts
-  bets <- sapply(active, function(p) p$total_bet_this_hand)
-  unique_bets <- sort(unique(bets[bets > 0]))
-  
+
+  # Get bet amounts from ALL players (including folded) to count all contributions
+  all_bets <- sapply(players, function(p) p$total_bet_this_hand)
+  unique_bets <- sort(unique(all_bets[all_bets > 0]))
+
   if (length(unique_bets) == 0) {
     return(list())
   }
-  
+
   pots <- list()
   previous_level <- 0
-  
+
   for (level in unique_bets) {
-    
-    # Who can win this pot? (bet >= level)
+
+    # Who can WIN this pot? (non-folded and bet >= level)
     eligible <- Filter(function(p) p$total_bet_this_hand >= level, active)
-    
-    # Amount in this pot
+
+    # Who CONTRIBUTED to this pot? (ALL players including folded who bet >= level)
+    contributors <- Filter(function(p) p$total_bet_this_hand >= level, players)
+
+    # Amount uses all contributors (not just eligible winners)
     contribution <- level - previous_level
-    amount <- contribution * length(eligible)
-    
+    amount <- contribution * length(contributors)
+
     if (amount > 0) {
       pots[[length(pots) + 1]] <- list(
         amount = amount,
@@ -41,10 +44,10 @@ calculate_side_pots <- function(players) {
         bet_level = level
       )
     }
-    
+
     previous_level <- level
   }
-  
+
   return(pots)
 }
 
@@ -164,16 +167,17 @@ validate_raise <- function(raise_amount, player_id) {
     ))
   }
   
-  # Check minimum raise
+  # Check minimum raise (all-in raises are always allowed even if below min_raise)
   min_raise <- get_min_raise()
-  
-  if (raise_amount < min_raise) {
+  is_all_in <- (call_amount + raise_amount >= player$chips)
+
+  if (!is_all_in && raise_amount < min_raise) {
     return(list(
       valid = FALSE,
       error = paste("Minimum raise is $", min_raise)
     ))
   }
-  
+
   return(list(valid = TRUE, error = NULL))
 }
 
