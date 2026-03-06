@@ -1,0 +1,82 @@
+/* Minimal, stable poker game styles */
+
+body {
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  background: #f4f4f4;
+  color: #222;
+}
+
+.section {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+/* Info bar across the top */
+.info-bar {
+  background: #2c3e50;
+  color: #fff;
+  padding: 8px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  font-size: 14px;
+}
+
+/* Playing cards */
+.card {
+  display: inline-block;
+  width: 44px;
+  height: 64px;
+  border: 1px solid #999;
+  border-radius: 4px;
+  font-size: 18px;
+  font-weight: bold;
+  text-align: center;
+  line-height: 64px;
+  margin: 2px;
+  background: #fff;
+  box-shadow: 1px 1px 3px rgba(0,0,0,.15);
+  user-select: none;
+}
+
+.red-card   { color: #c0392b; }
+.black-card { color: #1a1a1a; }
+
+/* Action row */
+.action-row {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+
+/* Turn banner */
+.turn-banner {
+  background: #27ae60;
+  color: #fff;
+  text-align: center;
+  font-weight: bold;
+  padding: 6px;
+  border-radius: 3px;
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+
+/* Waiting box */
+.waiting-box {
+  text-align: center;
+  color: #555;
+  font-size: 15px;
+  padding: 20px;
+}
+
+/* Tables */
+table.shiny-table {
+  width: 100%;
+  font-size: 13px;
+}
