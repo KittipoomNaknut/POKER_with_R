@@ -67,15 +67,6 @@ ui <- fluidPage(
             )
         ),
         
-        # Start Game Button
-        conditionalPanel(
-          condition = "output.game_started == 'false'",
-          div(style = "margin: 20px 0;",
-              actionButton("start_game", "🎲 START NEW HAND 🎲",
-                           class = "btn btn-start")
-          )
-        ),
-        
         # Your Info
         div(class = "player-section",
             h4(textOutput("player_name_display", inline = TRUE)),
@@ -86,12 +77,36 @@ ui <- fluidPage(
             )
         ),
         
-        # Other Players (แสดงตลอด ไม่ต้องรอเริ่มเกม)
+        # ✅ ย้าย Start Game Button มาไว้ตรงนี้
+        conditionalPanel(
+          condition = "output.game_started == 'false'",
+          div(style = "margin: 30px 0; text-align: center; background: #2a2a2a; padding: 30px; border-radius: 10px;",
+              h3(style = "color: #ffd700; margin-bottom: 20px;", 
+                 "Ready to play?"),
+              p(style = "color: #ccc; margin-bottom: 20px;",
+                paste0("Players joined: ", textOutput("player_count_inline", inline = TRUE))),
+              actionButton("start_game", "🎲 START NEW HAND 🎲",
+                           class = "btn btn-start",
+                           style = "font-size: 28px; padding: 25px 50px; width: 100%;")
+          )
+        ),
+        
+        # Other Players
         conditionalPanel(
           condition = "output.player_id != null && output.player_id != ''",
-          div(class = "other-players",
-              h4(style = "color: #ffd700; margin: 20px 0 10px 0;", "Other Players"),
-              uiOutput("other_players_display")
+          div(style = "margin: 20px 0;",
+              h4(style = "color: #ffd700; margin-bottom: 15px;", 
+                 "👥 Other Players"),
+              div(class = "other-players",
+                  uiOutput("other_players_display")
+              )
+          )
+        ),
+        # ✅ เพิ่มส่วนนี้ (START BUTTON) ใหม่ทั้งหมด
+        conditionalPanel(
+          condition = "output.player_id != null && output.player_id != ''",
+          div(id = "start_game_section",
+              uiOutput("start_game_button")
           )
         ),
         
@@ -276,6 +291,12 @@ server <- function(input, output, session) {
   observeEvent(input$join_game, {
     req(input$player_name)
     
+    # Check if already joined
+    if (!is.null(player_id())) {
+      showNotification("You already joined!", type = "warning")
+      return()
+    }
+    
     name <- trimws(input$player_name)
     
     if (nchar(name) == 0) {
@@ -289,7 +310,28 @@ server <- function(input, output, session) {
       showNotification("Game is full!", type = "error")
     } else {
       player_id(pid)
-      showNotification(paste("Welcome,", name, "!"), type = "message")
+      
+      # Debug log
+      cat("\n=== PLAYER JOINED ===\n")
+      cat("Session ID:", session$token, "\n")
+      cat("Player ID:", pid, "\n")
+      cat("Player Name:", game_state$players[[pid]]$name, "\n")
+      cat("Total Players:", length(game_state$players), "\n")
+      cat("All Players:\n")
+      for (p in game_state$players) {
+        cat("  - ID:", p$id, "Name:", p$name, "\n")
+      }
+      cat("====================\n\n")
+      
+      # Get actual name (might be modified if duplicate)
+      actual_name <- game_state$players[[pid]]$name
+      
+      if (actual_name != name) {
+        showNotification(paste("Name taken. You are:", actual_name), 
+                         type = "warning")
+      } else {
+        showNotification(paste("Welcome,", actual_name, "!"), type = "message")
+      }
     }
   })
   
@@ -417,6 +459,30 @@ server <- function(input, output, session) {
   })
   outputOptions(output, "game_started", suspendWhenHidden = FALSE)
   
+  output$start_game_button <- renderUI({
+    req(player_id())
+    autoInvalidate()
+    
+    # Only show if game not started
+    if (game_state$game_started) {
+      return(NULL)
+    }
+    
+    # Show START button
+    div(style = "margin: 30px 0; padding: 30px; background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%); border-radius: 15px; text-align: center; box-shadow: 0 10px 30px rgba(255, 215, 0, 0.5);",
+        h2(style = "color: #000; margin: 0 0 15px 0; font-size: 32px;", 
+           "🎮 READY TO PLAY? 🎮"),
+        p(style = "color: #333; margin: 0 0 10px 0; font-size: 18px;",
+          paste0("Players joined: ", length(game_state$players), "/", game_state$max_players)),
+        p(style = "color: #666; margin: 0 0 20px 0; font-size: 14px;",
+          "Need at least 2 players to start"),
+        actionButton("start_game", 
+                     "🎲 START NEW HAND 🎲",
+                     class = "btn",
+                     style = "font-size: 28px; padding: 25px 50px; background: #000; color: #ffd700; border: 3px solid #fff; width: 100%; font-weight: bold; cursor: pointer;")
+    )
+  })
+  
   output$is_your_turn <- reactive({
     req(player_id())
     autoInvalidate()
@@ -536,16 +602,34 @@ server <- function(input, output, session) {
     req(player_id())
     autoInvalidate()
     
-    if (player_id() > length(game_state$players)) {
-      return(NULL)
+    # Safety check
+    if (is.null(player_id()) || player_id() < 1 || 
+        player_id() > length(game_state$players)) {
+      return(p("Error: Invalid player ID", style = "color: red;"))
     }
     
-    other_players <- game_state$players[-player_id()]
+    # Get all players
+    all_players <- game_state$players
+    
+    if (length(all_players) <= 1) {
+      return(p("No other players yet", style = "color: #999;"))
+    }
+    
+    # Filter out current player
+    current_pid <- player_id()
+    other_players <- list()
+    
+    for (p in all_players) {
+      if (p$id != current_pid) {
+        other_players[[length(other_players) + 1]] <- p
+      }
+    }
     
     if (length(other_players) == 0) {
-      return(p("No other players yet"))
+      return(p("No other players yet", style = "color: #999;"))
     }
     
+    # Display other players
     lapply(other_players, function(p) {
       is_active <- game_state$current_turn == p$id && 
         game_state$game_started &&

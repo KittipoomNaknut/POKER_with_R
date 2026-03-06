@@ -9,7 +9,6 @@
 #' Add player to game
 #' @param player_name string player name
 #' @return player_id or NULL if failed
-#' Add player to game
 add_player <- function(player_name) {
   
   # Sanitize name
@@ -21,19 +20,39 @@ add_player <- function(player_name) {
     return(NULL)
   }
   
-  # ✅ แก้ตรงนี้ - เช็คชื่อซ้ำแบบ case-insensitive
-  for (p in game_state$players) {
-    if (tolower(p$name) == tolower(player_name)) {
-      # Return existing player ID
-      return(p$id)
+  # Check for duplicate names and auto-increment
+  original_name <- player_name
+  counter <- 2
+  
+  while (TRUE) {
+    # Check if this name exists
+    name_exists <- FALSE
+    for (p in game_state$players) {
+      if (tolower(p$name) == tolower(player_name)) {
+        name_exists <- TRUE
+        break
+      }
+    }
+    
+    if (!name_exists) {
+      break  # Name is unique
+    }
+    
+    # Name exists, add number
+    player_name <- paste0(original_name, counter)
+    counter <- counter + 1
+    
+    if (counter > 100) {
+      return(NULL)  # Safety limit
     }
   }
   
-  # Check if full
+  # Check if game full
   if (length(game_state$players) >= game_state$max_players) {
     return(NULL)
   }
   
+  # Create new player
   player_id <- length(game_state$players) + 1
   
   game_state$players[[player_id]] <- list(
@@ -256,7 +275,6 @@ player_raise <- function(player_id, raise_amount) {
   return(list(success = TRUE, error = NULL))
 }
 
-#' Move to next active player
 #' Move to next active player
 next_player <- function() {
   
