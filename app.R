@@ -383,12 +383,19 @@ server <- function(input, output, session) {
     if (game_state$current_turn == player_id()) {
       player <- game_state$players[[player_id()]]
       call_amount <- game_state$current_bet - player$bet_this_round
-      amount <- player$chips - call_amount
       
-      result <- player_raise(player_id(), amount)
-      
-      if (!result$success) {
-        showNotification(result$error, type = "error")
+      if (call_amount >= player$chips) {
+        # Just call all-in (can't raise)
+        player_call(player_id())
+      } else {
+        # Raise all remaining chips
+        raise_amount <- player$chips - call_amount
+        result <- player_raise(player_id(), raise_amount)
+        
+        if (!result$success) {
+          # If raise fails, just call all-in
+          player_call(player_id())
+        }
       }
     }
   })
@@ -442,12 +449,14 @@ server <- function(input, output, session) {
   
   output$player_name_display <- renderText({
     req(player_id())
+    if (player_id() > length(game_state$players)) return("")
     paste("👤", game_state$players[[player_id()]]$name)
   })
   
   output$player_chips <- renderText({
     req(player_id())
     autoInvalidate()
+    if (player_id() > length(game_state$players)) return("0")
     format(game_state$players[[player_id()]]$chips, big.mark = ",")
   })
   
@@ -458,6 +467,9 @@ server <- function(input, output, session) {
   output$player_cards_display <- renderUI({
     req(player_id())
     autoInvalidate()
+    if (player_id() > length(game_state$players)) {
+      return(p("No cards yet", style = "color: #999;"))
+    }
     
     cards <- game_state$players[[player_id()]]$cards
     
@@ -469,34 +481,6 @@ server <- function(input, output, session) {
       color <- if (grepl("[♥♦]", card)) "card-red" else "card-black"
       div(class = paste("card", color), card)
     })
-  })
-  
-  output$community_cards_display <- renderUI({
-    autoInvalidate()
-    
-    cards <- game_state$community_cards
-    total_needed <- 5
-    
-    # Show actual cards
-    card_divs <- if (length(cards) > 0) {
-      lapply(cards, function(card) {
-        color <- if (grepl("[♥♦]", card)) "card-red" else "card-black"
-        div(class = paste("card", color), card)
-      })
-    } else {
-      list()
-    }
-    
-    # Add back cards for unrevealed
-    n_back <- total_needed - length(cards)
-    if (n_back > 0) {
-      back_cards <- lapply(1:n_back, function(i) {
-        div(class = "card card-back", "?")
-      })
-      card_divs <- c(card_divs, back_cards)
-    }
-    
-    tagList(card_divs)
   })
   
   # ==========================================
@@ -730,4 +714,4 @@ server <- function(input, output, session) {
 # RUN APP
 # ============================================
 
-# shinyApp(ui = ui, server = server)
+shinyApp(ui = ui, server = server)
