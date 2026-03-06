@@ -9,6 +9,7 @@
 #' Add player to game
 #' @param player_name string player name
 #' @return player_id or NULL if failed
+#' Add player to game
 add_player <- function(player_name) {
   
   # Sanitize name
@@ -20,9 +21,10 @@ add_player <- function(player_name) {
     return(NULL)
   }
   
-  # Check if name exists
+  # ✅ แก้ตรงนี้ - เช็คชื่อซ้ำแบบ case-insensitive
   for (p in game_state$players) {
     if (tolower(p$name) == tolower(player_name)) {
+      # Return existing player ID
       return(p$id)
     }
   }

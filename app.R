@@ -70,8 +70,10 @@ ui <- fluidPage(
         # Start Game Button
         conditionalPanel(
           condition = "output.game_started == 'false'",
-          actionButton("start_game", "START NEW HAND",
-                       class = "btn btn-start")
+          div(style = "margin: 20px 0;",
+              actionButton("start_game", "🎲 START NEW HAND 🎲",
+                           class = "btn btn-start")
+          )
         ),
         
         # Your Info
@@ -84,10 +86,11 @@ ui <- fluidPage(
             )
         ),
         
-        # Other Players
+        # Other Players (แสดงตลอด ไม่ต้องรอเริ่มเกม)
         conditionalPanel(
-          condition = "output.game_started == 'true'",
+          condition = "output.player_id != null && output.player_id != ''",
           div(class = "other-players",
+              h4(style = "color: #ffd700; margin: 20px 0 10px 0;", "Other Players"),
               uiOutput("other_players_display")
           )
         ),
@@ -418,6 +421,11 @@ server <- function(input, output, session) {
     req(player_id())
     autoInvalidate()
     
+    # Safety check
+    if (player_id() > length(game_state$players)) {
+      return("false")
+    }
+    
     as.character(
       game_state$current_turn == player_id() &&
         game_state$game_started &&
@@ -449,14 +457,22 @@ server <- function(input, output, session) {
   
   output$player_name_display <- renderText({
     req(player_id())
-    if (player_id() > length(game_state$players)) return("")
+    
+    if (player_id() > length(game_state$players)) {
+      return("")
+    }
+    
     paste("👤", game_state$players[[player_id()]]$name)
   })
   
   output$player_chips <- renderText({
     req(player_id())
     autoInvalidate()
-    if (player_id() > length(game_state$players)) return("0")
+    
+    if (player_id() > length(game_state$players)) {
+      return("0")
+    }
+    
     format(game_state$players[[player_id()]]$chips, big.mark = ",")
   })
   
@@ -467,6 +483,7 @@ server <- function(input, output, session) {
   output$player_cards_display <- renderUI({
     req(player_id())
     autoInvalidate()
+    
     if (player_id() > length(game_state$players)) {
       return(p("No cards yet", style = "color: #999;"))
     }
@@ -483,6 +500,34 @@ server <- function(input, output, session) {
     })
   })
   
+  output$community_cards_display <- renderUI({
+    autoInvalidate()
+    
+    cards <- game_state$community_cards
+    total_needed <- 5
+    
+    # Show actual cards
+    card_divs <- if (length(cards) > 0) {
+      lapply(cards, function(card) {
+        color <- if (grepl("[♥♦]", card)) "card-red" else "card-black"
+        div(class = paste("card", color), card)
+      })
+    } else {
+      list()
+    }
+    
+    # Add back cards for unrevealed
+    n_back <- total_needed - length(cards)
+    if (n_back > 0) {
+      back_cards <- lapply(1:n_back, function(i) {
+        div(class = "card card-back", "?")
+      })
+      card_divs <- c(card_divs, back_cards)
+    }
+    
+    tagList(card_divs)
+  })
+  
   # ==========================================
   # Outputs - Other Players
   # ==========================================
@@ -490,6 +535,10 @@ server <- function(input, output, session) {
   output$other_players_display <- renderUI({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return(NULL)
+    }
     
     other_players <- game_state$players[-player_id()]
     
@@ -567,6 +616,10 @@ server <- function(input, output, session) {
     req(player_id())
     autoInvalidate()
     
+    if (player_id() > length(game_state$players)) {
+      return("CALL")
+    }
+    
     player <- game_state$players[[player_id()]]
     call_amount <- game_state$current_bet - player$bet_this_round
     
@@ -599,6 +652,10 @@ server <- function(input, output, session) {
     req(player_id())
     autoInvalidate()
     
+    if (player_id() > length(game_state$players)) {
+      return("ALL-IN ($0)")
+    }
+    
     player <- game_state$players[[player_id()]]
     paste0("ALL-IN ($", player$chips, ")")
   })
@@ -626,12 +683,21 @@ server <- function(input, output, session) {
   output$stat_hands_played <- renderText({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return("0")
+    }
+    
     game_state$players[[player_id()]]$stats$hands_played
   })
   
   output$stat_hands_won <- renderText({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return("0 (0%)")
+    }
     
     stats <- game_state$players[[player_id()]]$stats
     won <- stats$hands_won
@@ -644,18 +710,32 @@ server <- function(input, output, session) {
   output$stat_total_won <- renderText({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return("0")
+    }
+    
     format(game_state$players[[player_id()]]$stats$total_won, big.mark = ",")
   })
   
   output$stat_biggest_pot <- renderText({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return("0")
+    }
+    
     format(game_state$players[[player_id()]]$stats$biggest_pot, big.mark = ",")
   })
   
   output$stat_streak <- renderUI({
     req(player_id())
     autoInvalidate()
+    
+    if (player_id() > length(game_state$players)) {
+      return(span("—"))
+    }
     
     streak <- game_state$players[[player_id()]]$stats$current_streak
     
@@ -692,19 +772,17 @@ server <- function(input, output, session) {
   
   session$onSessionEnded(function() {
     # Player disconnected
-    if (!is.null(player_id())) {
-      pid <- player_id()
+    pid <- isolate(player_id())
+    
+    if (!is.null(pid) && pid > 0 && pid <= length(game_state$players)) {
+      player_name <- game_state$players[[pid]]$name
       
-      if (pid > 0 && pid <= length(game_state$players)) {
-        player_name <- game_state$players[[pid]]$name
-        
-        # Auto-fold if it was their turn
-        if (game_state$game_started && 
-            game_state$current_turn == pid &&
-            !game_state$players[[pid]]$folded) {
-          log_action(paste(player_name, "disconnected - auto fold"))
-          player_fold(pid)
-        }
+      # Auto-fold if it was their turn
+      if (game_state$game_started && 
+          game_state$current_turn == pid &&
+          !game_state$players[[pid]]$folded) {
+        log_action(paste(player_name, "disconnected - auto fold"))
+        player_fold(pid)
       }
     }
   })
