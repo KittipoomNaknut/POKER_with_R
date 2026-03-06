@@ -2,36 +2,9 @@
 # POKER LAN GAME  –  app.R
 # Texas Hold'em, multi-player, with win-probability stats
 # ============================================================
-
-library(shiny)
-library(shinyjs)
-
-source("R/poker_logic.R")
-source("R/betting.R")
-source("R/game_state.R")
-source("R/stats.R")
-
-# ---- Shared game state (one instance per server process) ----
-game_state <- reactiveValues(
-  players          = list(),
-  max_players      = 9L,
-  starting_chips   = 1000,
-  game_started     = FALSE,
-  current_round    = "waiting",
-  deck             = character(),
-  community_cards  = character(),
-  pot              = 0,
-  current_bet      = 0,
-  last_raise_amount = 0,
-  small_blind      = 5,
-  big_blind        = 10,
-  dealer_position  = 1L,
-  current_turn     = 0L,
-  turn_started_at  = NULL,
-  turn_timer_seconds = 30L,
-  showdown_at      = NULL,
-  action_log       = character()
-)
+# NOTE: libraries, source() calls, and game_state are defined
+# in global.R so they land in the true global environment and
+# are visible to all helper functions across every session.
 
 # ============================================================
 # UI
